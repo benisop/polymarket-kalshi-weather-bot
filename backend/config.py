@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     BTC_PRICE_SOURCE: str = "coinbase"
 
     # Edge mínimo bajado a 5%
-    MIN_EDGE_THRESHOLD: float = 0.10
+    MIN_EDGE_THRESHOLD: float = 0.07
     MAX_ENTRY_PRICE: float = 0.35
     MAX_TRADES_PER_WINDOW: int = 1
     MAX_TOTAL_PENDING_TRADES: int = 20
