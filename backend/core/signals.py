@@ -114,7 +114,7 @@ async def generate_btc_signal(market: BtcMarket) -> Optional[TradingSignal]:
     indicator_signs = [rsi_signal, momentum_signal, vwap_signal, sma_signal]
     up_votes = sum(1 for s in indicator_signs if s > 0.05)
     down_votes = sum(1 for s in indicator_signs if s < -0.05)
-    has_convergence = up_votes >= 2 or down_votes >= 2
+    has_convergence = True
 
     w = settings
     composite = (
