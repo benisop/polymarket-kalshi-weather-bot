@@ -162,6 +162,18 @@ async def generate_btc_signal(market: BtcMarket) -> Optional[TradingSignal]:
     model_up_prob = max(0.30, min(0.70, model_up_prob))
 
     # Calculate edge and direction
+    # --- Mean reversion signal ---
+    if market_up_prob > 0.60:
+        mean_reversion_prob = 0.35  # market overpriced UP, fade it
+    elif market_up_prob < 0.40:
+        mean_reversion_prob = 0.65  # market underpriced UP, buy it
+    else:
+        mean_reversion_prob = model_up_prob  # neutral, use model
+
+    # Blend mean reversion with existing model (50/50)
+    model_up_prob = 0.50 * mean_reversion_prob + 0.50 * model_up_prob
+    model_up_prob = max(0.30, min(0.70, model_up_prob))
+
     edge, direction = calculate_edge(model_up_prob, market_up_prob)
 
     # Entry price filter
