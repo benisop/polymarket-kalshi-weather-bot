@@ -1,5 +1,5 @@
 """FastAPI backend for BTC 5-min trading bot dashboard."""
-from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
@@ -34,7 +34,6 @@ app.add_middleware(
 )
 
 
-# WebSocket connection manager
 class ConnectionManager:
     def __init__(self):
         self.active_connections: List[WebSocket] = []
@@ -58,7 +57,6 @@ class ConnectionManager:
 ws_manager = ConnectionManager()
 
 
-# Pydantic response models
 class BtcPriceResponse(BaseModel):
     price: float
     change_24h: float
@@ -222,14 +220,11 @@ class EventResponse(BaseModel):
     data: dict = {}
 
 
-# Startup / Shutdown
 @app.on_event("startup")
 async def startup():
     print("=" * 60)
     print("BTC 5-MIN TRADING BOT v3.0")
     print("=" * 60)
-    print("Initializing database...")
-
     init_db()
 
     db = SessionLocal()
@@ -245,36 +240,15 @@ async def startup():
             )
             db.add(state)
             db.commit()
-            print(f"Created new bot state with ${settings.INITIAL_BANKROLL:,.2f} bankroll")
         else:
             state.is_running = True
             db.commit()
-            print(f"Loaded bot state: Bankroll ${state.bankroll:,.2f}, P&L ${state.total_pnl:+,.2f}, {state.total_trades} trades")
     finally:
         db.close()
-
-    print("")
-    print("Configuration:")
-    print(f"  - Simulation mode: {settings.SIMULATION_MODE}")
-    print(f"  - Min edge threshold: {settings.MIN_EDGE_THRESHOLD:.0%}")
-    print(f"  - Kelly fraction: {settings.KELLY_FRACTION:.0%}")
-    print(f"  - Scan interval: {settings.SCAN_INTERVAL_SECONDS}s")
-    print(f"  - Settlement interval: {settings.SETTLEMENT_INTERVAL_SECONDS}s")
-    print("")
 
     from backend.core.scheduler import start_scheduler, log_event
     start_scheduler()
     log_event("success", "BTC 5-min trading bot initialized")
-
-    print("Bot is now running!")
-    print(f"  - BTC scan: every {settings.SCAN_INTERVAL_SECONDS}s (edge >= {settings.MIN_EDGE_THRESHOLD:.0%})")
-    print(f"  - Settlement check: every {settings.SETTLEMENT_INTERVAL_SECONDS}s")
-    if settings.WEATHER_ENABLED:
-        print(f"  - Weather scan: every {settings.WEATHER_SCAN_INTERVAL_SECONDS}s (edge >= {settings.WEATHER_MIN_EDGE_THRESHOLD:.0%})")
-        print(f"  - Weather cities: {settings.WEATHER_CITIES}")
-    else:
-        print("  - Weather trading: DISABLED")
-    print("=" * 60)
 
 
 @app.on_event("shutdown")
@@ -283,7 +257,6 @@ async def shutdown():
     stop_scheduler()
 
 
-# Core endpoints
 @app.get("/")
 async def root():
     return {"status": "ok", "message": "BTC 5-Min Trading Bot API v3.0", "simulation_mode": settings.SIMULATION_MODE}
@@ -299,9 +272,7 @@ async def get_stats(db: Session = Depends(get_db)):
     state = db.query(BotState).first()
     if not state:
         raise HTTPException(status_code=404, detail="Bot state not initialized")
-
     win_rate = state.winning_trades / state.total_trades if state.total_trades > 0 else 0
-
     return BotStats(
         bankroll=state.bankroll,
         total_trades=state.total_trades,
@@ -313,15 +284,12 @@ async def get_stats(db: Session = Depends(get_db)):
     )
 
 
-# BTC-specific endpoints
 @app.get("/api/btc/price", response_model=Optional[BtcPriceResponse])
 async def get_btc_price():
-    """Get current BTC price and momentum data."""
     try:
         btc = await fetch_crypto_price("BTC")
         if not btc:
             return None
-
         return BtcPriceResponse(
             price=btc.current_price,
             change_24h=btc.change_24h,
@@ -336,7 +304,6 @@ async def get_btc_price():
 
 @app.get("/api/btc/windows", response_model=List[BtcWindowResponse])
 async def get_btc_windows():
-    """Get upcoming BTC 5-min windows with prices."""
     try:
         markets = await fetch_active_btc_markets()
         return [
@@ -361,7 +328,6 @@ async def get_btc_windows():
 
 @app.get("/api/signals", response_model=List[SignalResponse])
 async def get_signals():
-    """Get current BTC trading signals."""
     try:
         signals = await scan_for_signals()
         return [_signal_to_response(s) for s in signals]
@@ -371,7 +337,6 @@ async def get_signals():
 
 @app.get("/api/signals/actionable", response_model=List[SignalResponse])
 async def get_actionable_signals():
-    """Get only signals that pass the edge threshold."""
     try:
         signals = await scan_for_signals()
         actionable = [s for s in signals if s.passes_threshold]
@@ -403,16 +368,11 @@ def _signal_to_response(s: TradingSignal, actionable: bool = False) -> SignalRes
 
 
 @app.get("/api/trades", response_model=List[TradeResponse])
-async def get_trades(
-    limit: int = 50,
-    status: Optional[str] = None,
-    db: Session = Depends(get_db)
-):
+async def get_trades(limit: int = 50, status: Optional[str] = None, db: Session = Depends(get_db)):
     query = db.query(Trade)
     if status:
         query = query.filter(Trade.result == status)
     trades = query.order_by(Trade.timestamp.desc()).limit(limit).all()
-
     return [
         TradeResponse(
             id=t.id,
@@ -434,11 +394,9 @@ async def get_trades(
 @app.get("/api/equity-curve")
 async def get_equity_curve(db: Session = Depends(get_db)):
     trades = db.query(Trade).filter(Trade.settled == True).order_by(Trade.timestamp).all()
-
     curve = []
     cumulative_pnl = 0
     bankroll = settings.INITIAL_BANKROLL
-
     for trade in trades:
         if trade.pnl is not None:
             cumulative_pnl += trade.pnl
@@ -448,26 +406,20 @@ async def get_equity_curve(db: Session = Depends(get_db)):
                 "bankroll": bankroll + cumulative_pnl,
                 "trade_id": trade.id
             })
-
     return curve
 
 
 @app.post("/api/simulate-trade")
 async def simulate_trade(signal_ticker: str, db: Session = Depends(get_db)):
     from backend.core.scheduler import log_event
-
     signals = await scan_for_signals()
     signal = next((s for s in signals if s.market.market_id == signal_ticker), None)
-
     if not signal:
         raise HTTPException(status_code=404, detail="Signal not found")
-
     state = db.query(BotState).first()
     if not state:
         raise HTTPException(status_code=500, detail="Bot state not initialized")
-
     entry_price = signal.market.up_price if signal.direction == "up" else signal.market.down_price
-
     trade = Trade(
         market_ticker=signal.market.market_id,
         platform="polymarket",
@@ -479,11 +431,9 @@ async def simulate_trade(signal_ticker: str, db: Session = Depends(get_db)):
         market_price_at_entry=signal.market_probability,
         edge_at_entry=signal.edge
     )
-
     db.add(trade)
     state.total_trades += 1
     db.commit()
-
     log_event("trade", f"Manual BTC trade: {signal.direction.upper()} {signal.market.slug}")
     return {"status": "ok", "trade_id": trade.id, "size": trade.size}
 
@@ -491,26 +441,20 @@ async def simulate_trade(signal_ticker: str, db: Session = Depends(get_db)):
 @app.post("/api/run-scan")
 async def run_scan(db: Session = Depends(get_db)):
     from backend.core.scheduler import run_manual_scan, log_event
-
     state = db.query(BotState).first()
     if state:
         state.last_run = datetime.utcnow()
         db.commit()
-
     log_event("info", "Manual scan triggered (BTC + Weather)")
     await run_manual_scan()
-
     signals = await scan_for_signals()
     actionable = [s for s in signals if s.passes_threshold]
-
     result = {
         "status": "ok",
         "total_signals": len(signals),
         "actionable_signals": len(actionable),
         "timestamp": datetime.utcnow().isoformat(),
     }
-
-    # Also run weather scan if enabled
     if settings.WEATHER_ENABLED:
         try:
             from backend.core.weather_signals import scan_for_weather_signals
@@ -521,7 +465,6 @@ async def run_scan(db: Session = Depends(get_db)):
         except Exception:
             result["weather_signals"] = 0
             result["weather_actionable"] = 0
-
     return result
 
 
@@ -529,12 +472,9 @@ async def run_scan(db: Session = Depends(get_db)):
 async def settle_trades_endpoint(db: Session = Depends(get_db)):
     from backend.core.settlement import settle_pending_trades, update_bot_state_with_settlements
     from backend.core.scheduler import log_event
-
     log_event("info", "Manual settlement triggered")
-
     settled = await settle_pending_trades(db)
     await update_bot_state_with_settlements(db, settled)
-
     return {
         "status": "ok",
         "settled_count": len(settled),
@@ -543,10 +483,8 @@ async def settle_trades_endpoint(db: Session = Depends(get_db)):
 
 
 def _compute_calibration_summary(db: Session) -> Optional[CalibrationSummary]:
-    """Compute calibration summary from settled signals."""
     total_signals = db.query(Signal).count()
     settled_signals = db.query(Signal).filter(Signal.outcome_correct.isnot(None)).all()
-
     if not settled_signals:
         if total_signals == 0:
             return None
@@ -558,27 +496,19 @@ def _compute_calibration_summary(db: Session) -> Optional[CalibrationSummary]:
             avg_actual_edge=0.0,
             brier_score=0.0,
         )
-
     total_with_outcome = len(settled_signals)
     correct = sum(1 for s in settled_signals if s.outcome_correct)
     accuracy = correct / total_with_outcome if total_with_outcome > 0 else 0.0
-
     avg_predicted_edge = sum(abs(s.edge) for s in settled_signals) / total_with_outcome
-    # Actual edge: for correct predictions, edge was real; for incorrect, edge was negative
     avg_actual_edge = sum(
         abs(s.edge) if s.outcome_correct else -abs(s.edge)
         for s in settled_signals
     ) / total_with_outcome
-
-    # Brier score: mean squared error of probability forecasts
-    # For each signal: (predicted_prob - actual_outcome)^2
     brier_sum = 0.0
     for s in settled_signals:
-        # Model probability is for UP; actual is 1.0 if UP won, 0.0 if DOWN won
         actual = s.settlement_value if s.settlement_value is not None else 0.5
         brier_sum += (s.model_probability - actual) ** 2
     brier_score = brier_sum / total_with_outcome
-
     return CalibrationSummary(
         total_signals=total_signals,
         total_with_outcome=total_with_outcome,
@@ -591,27 +521,19 @@ def _compute_calibration_summary(db: Session) -> Optional[CalibrationSummary]:
 
 @app.get("/api/calibration")
 async def get_calibration(db: Session = Depends(get_db)):
-    """Return calibration data: predicted probability vs actual win rate."""
     signals = db.query(Signal).filter(Signal.outcome_correct.isnot(None)).all()
-
     if not signals:
         return {"buckets": [], "summary": None}
-
-    # Bucket signals by model_probability into 5% bins
     from collections import defaultdict
     buckets_data = defaultdict(lambda: {"predicted_sum": 0.0, "correct": 0, "total": 0})
-
     for s in signals:
-        # Bin by 5% increments
         bin_start = int(s.model_probability * 100 // 5) * 5
         bin_end = bin_start + 5
         bucket_key = f"{bin_start}-{bin_end}%"
-
         buckets_data[bucket_key]["predicted_sum"] += s.model_probability
         buckets_data[bucket_key]["total"] += 1
         if s.outcome_correct:
             buckets_data[bucket_key]["correct"] += 1
-
     buckets = []
     for bucket_key in sorted(buckets_data.keys()):
         d = buckets_data[bucket_key]
@@ -621,52 +543,31 @@ async def get_calibration(db: Session = Depends(get_db)):
             actual_rate=d["correct"] / d["total"],
             count=d["total"],
         ))
-
     summary = _compute_calibration_summary(db)
-
     return {"buckets": buckets, "summary": summary}
 
 
-# Kalshi endpoints
 @app.get("/api/kalshi/status")
 async def get_kalshi_status():
-    """Test Kalshi API authentication and return connection status."""
     from backend.data.kalshi_client import KalshiClient, kalshi_credentials_present
-
     if not kalshi_credentials_present():
-        return {
-            "connected": False,
-            "error": "Kalshi credentials not configured (KALSHI_API_KEY_ID / KALSHI_PRIVATE_KEY_PATH)",
-        }
-
+        return {"connected": False, "error": "Kalshi credentials not configured"}
     try:
         client = KalshiClient()
         balance_data = await client.get_balance()
-        return {
-            "connected": True,
-            "balance": balance_data,
-        }
+        return {"connected": True, "balance": balance_data}
     except Exception as e:
-        return {
-            "connected": False,
-            "error": str(e),
-        }
+        return {"connected": False, "error": str(e)}
 
 
-# Weather endpoints
 @app.get("/api/weather/forecasts", response_model=List[WeatherForecastResponse])
 async def get_weather_forecasts():
-    """Get ensemble forecasts for configured cities."""
     if not settings.WEATHER_ENABLED:
         return []
-
     try:
         from backend.data.weather import fetch_ensemble_forecast, CITY_CONFIG
-        from datetime import date
-
         city_keys = [c.strip() for c in settings.WEATHER_CITIES.split(",") if c.strip()]
         forecasts = []
-
         for city_key in city_keys:
             if city_key not in CITY_CONFIG:
                 continue
@@ -683,7 +584,6 @@ async def get_weather_forecasts():
                     num_members=forecast.num_members,
                     ensemble_agreement=forecast.ensemble_agreement,
                 ))
-
         return forecasts
     except Exception:
         return []
@@ -691,17 +591,12 @@ async def get_weather_forecasts():
 
 @app.get("/api/weather/markets", response_model=List[WeatherMarketResponse])
 async def get_weather_markets():
-    """Get active weather temperature markets."""
     if not settings.WEATHER_ENABLED:
         return []
-
     try:
         from backend.data.weather_markets import fetch_polymarket_weather_markets
-
         city_keys = [c.strip() for c in settings.WEATHER_CITIES.split(",") if c.strip()]
         markets = await fetch_polymarket_weather_markets(city_keys)
-
-        # Also fetch Kalshi markets if enabled
         if settings.KALSHI_ENABLED:
             try:
                 from backend.data.kalshi_client import kalshi_credentials_present
@@ -711,7 +606,6 @@ async def get_weather_markets():
                     markets.extend(kalshi_markets)
             except Exception:
                 pass
-
         return [
             WeatherMarketResponse(
                 slug=m.slug,
@@ -736,13 +630,10 @@ async def get_weather_markets():
 
 @app.get("/api/weather/signals", response_model=List[WeatherSignalResponse])
 async def get_weather_signals():
-    """Get current weather trading signals."""
     if not settings.WEATHER_ENABLED:
         return []
-
     try:
         from backend.core.weather_signals import scan_for_weather_signals
-
         signals = await scan_for_weather_signals()
         return [_weather_signal_to_response(s) for s in signals]
     except Exception:
@@ -786,19 +677,15 @@ async def get_events(limit: int = 50):
     ]
 
 
-# Bot control
 @app.post("/api/bot/start")
 async def start_bot(db: Session = Depends(get_db)):
     from backend.core.scheduler import start_scheduler, log_event, is_scheduler_running
-
     state = db.query(BotState).first()
     if state:
         state.is_running = True
         db.commit()
-
     if not is_scheduler_running():
         start_scheduler()
-
     log_event("success", "Trading bot started")
     return {"status": "started", "is_running": True}
 
@@ -806,12 +693,10 @@ async def start_bot(db: Session = Depends(get_db)):
 @app.post("/api/bot/stop")
 async def stop_bot(db: Session = Depends(get_db)):
     from backend.core.scheduler import log_event
-
     state = db.query(BotState).first()
     if state:
         state.is_running = False
         db.commit()
-
     log_event("info", "Trading bot paused")
     return {"status": "stopped", "is_running": False}
 
@@ -819,7 +704,6 @@ async def stop_bot(db: Session = Depends(get_db)):
 @app.post("/api/bot/reset")
 async def reset_bot(db: Session = Depends(get_db)):
     from backend.core.scheduler import log_event
-
     try:
         trades_deleted = db.query(Trade).delete()
         state = db.query(BotState).first()
@@ -829,19 +713,15 @@ async def reset_bot(db: Session = Depends(get_db)):
             state.winning_trades = 0
             state.total_pnl = 0.0
             state.is_running = True
-
         ai_logs_deleted = db.query(AILog).delete()
         db.commit()
-
-        log_event("success", f"Bot reset: {trades_deleted} trades deleted. Fresh start with ${settings.INITIAL_BANKROLL:,.2f}")
-
+        log_event("success", f"Bot reset: {trades_deleted} trades deleted.")
         return {
             "status": "reset",
             "trades_deleted": trades_deleted,
             "ai_logs_deleted": ai_logs_deleted,
             "new_bankroll": settings.INITIAL_BANKROLL
         }
-
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Reset failed: {e}")
@@ -849,10 +729,7 @@ async def reset_bot(db: Session = Depends(get_db)):
 
 @app.get("/api/dashboard", response_model=DashboardData)
 async def get_dashboard(db: Session = Depends(get_db)):
-    """Get all dashboard data in one call."""
     stats = await get_stats(db)
-
-    # Fetch BTC price from microstructure first, fallback to CoinGecko
     btc_price_data = None
     micro_data = None
     try:
@@ -871,7 +748,7 @@ async def get_dashboard(db: Session = Depends(get_db)):
             )
             btc_price_data = BtcPriceResponse(
                 price=micro.price,
-                change_24h=micro.momentum_15m * 96,  # rough extrapolation
+                change_24h=micro.momentum_15m * 96,
                 change_7d=0,
                 market_cap=0,
                 volume_24h=0,
@@ -893,8 +770,6 @@ async def get_dashboard(db: Session = Depends(get_db)):
                 )
         except Exception:
             pass
-
-    # Fetch windows
     windows = []
     try:
         markets = await fetch_active_btc_markets()
@@ -916,16 +791,12 @@ async def get_dashboard(db: Session = Depends(get_db)):
         ]
     except Exception:
         pass
-
-    # Signals — return ALL signals, mark which are actionable
     signals = []
     try:
         raw_signals = await scan_for_signals()
         signals = [_signal_to_response(s, actionable=s.passes_threshold) for s in raw_signals]
     except Exception:
         pass
-
-    # Recent trades
     trades = db.query(Trade).order_by(Trade.timestamp.desc()).limit(50).all()
     recent_trades = [
         TradeResponse(
@@ -943,8 +814,6 @@ async def get_dashboard(db: Session = Depends(get_db)):
         )
         for t in trades
     ]
-
-    # Equity curve
     equity_trades = db.query(Trade).filter(Trade.settled == True).order_by(Trade.timestamp).all()
     equity_curve = []
     cumulative_pnl = 0
@@ -956,21 +825,15 @@ async def get_dashboard(db: Session = Depends(get_db)):
                 "pnl": cumulative_pnl,
                 "bankroll": settings.INITIAL_BANKROLL + cumulative_pnl
             })
-
-    # Calibration summary
     calibration = _compute_calibration_summary(db)
-
-    # Weather data (if enabled)
     weather_signals_data = []
     weather_forecasts_data = []
     if settings.WEATHER_ENABLED:
         try:
             from backend.core.weather_signals import scan_for_weather_signals
             from backend.data.weather import fetch_ensemble_forecast, CITY_CONFIG
-
             wx_signals = await scan_for_weather_signals()
             weather_signals_data = [_weather_signal_to_response(s) for s in wx_signals]
-
             city_keys = [c.strip() for c in settings.WEATHER_CITIES.split(",") if c.strip()]
             for city_key in city_keys:
                 if city_key not in CITY_CONFIG:
@@ -990,7 +853,6 @@ async def get_dashboard(db: Session = Depends(get_db)):
                     ))
         except Exception:
             pass
-
     return DashboardData(
         stats=stats,
         btc_price=btc_price_data,
@@ -1005,37 +867,49 @@ async def get_dashboard(db: Session = Depends(get_db)):
     )
 
 
+@app.post("/webhook/telegram")
+async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
+    """Recibe mensajes de Telegram y responde con Claude."""
+    from backend.notifications import handle_telegram_update
+    update = await request.json()
+    state = db.query(BotState).first()
+    win_rate = state.winning_trades / state.total_trades if state and state.total_trades > 0 else 0
+    bot_stats = {
+        "bankroll": state.bankroll if state else 0,
+        "total_pnl": state.total_pnl if state else 0,
+        "total_trades": state.total_trades if state else 0,
+        "win_rate": win_rate,
+        "is_running": state.is_running if state else False,
+    }
+    await handle_telegram_update(update, bot_stats)
+    return {"ok": True}
+
+
 @app.websocket("/ws/events")
 async def websocket_events(websocket: WebSocket):
     await ws_manager.connect(websocket)
-
     try:
         await websocket.send_json({
             "timestamp": datetime.utcnow().isoformat(),
             "type": "success",
             "message": "Connected to BTC trading bot"
         })
-
         from backend.core.scheduler import get_recent_events
         for event in get_recent_events(20):
             await websocket.send_json(event)
-
         last_event_count = len(get_recent_events(200))
         while True:
             await asyncio.sleep(2)
-
             current_events = get_recent_events(200)
             if len(current_events) > last_event_count:
                 new_events = current_events[last_event_count - len(current_events):]
                 for event in new_events:
                     await websocket.send_json(event)
                 last_event_count = len(current_events)
-
             await websocket.send_json({
                 "type": "heartbeat",
                 "timestamp": datetime.utcnow().isoformat()
             })
-
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)
     except Exception:
