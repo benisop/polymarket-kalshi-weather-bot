@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     BTC_PRICE_SOURCE: str = "coinbase"
 
     # Edge mínimo bajado a 5%
-    MIN_EDGE_THRESHOLD: float = 0.05
+    MIN_EDGE_THRESHOLD: float = 0.03
     MAX_ENTRY_PRICE: float = 0.55
     MAX_TRADES_PER_WINDOW: int = 1
     MAX_TOTAL_PENDING_TRADES: int = 20
@@ -43,7 +43,7 @@ class Settings(BaseSettings):
 
     MIN_TIME_REMAINING: int = 30
     # Entrar solo en los últimos 60 segundos
-    MAX_TIME_REMAINING: int = 120
+    MAX_TIME_REMAINING: int = 1800
 
     # MACD como indicador principal
     WEIGHT_MACD: float = 0.40
