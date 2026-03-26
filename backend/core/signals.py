@@ -7,7 +7,7 @@ import asyncio
 
 from backend.config import settings
 from backend.data.btc_markets import BtcMarket, fetch_active_btc_markets
-from backend.data.crypto import fetch_crypto_price, compute_btc_microstructure
+from backend.data.crypto import fetch_crypto_price, compute_btc_microstructure, fetch_binance_klines
 from backend.models.database import SessionLocal, Signal
 from backend.core.fair_model import compute_fair_updown
 
@@ -136,24 +136,44 @@ async def generate_btc_signal(market: BtcMarket) -> Optional[TradingSignal]:
         window_end = window_end.replace(tzinfo=None)
     time_remaining = (window_end - now).total_seconds()
 
-    # Estimate volatility from momentum
+    # Estimate volatility from recent 1m returns
     sigma_estimate = max(0.001, abs(micro.momentum_5m) / 100 * 3)
 
-    # Get reference price from market slug if available, else use current price
+    # Get reference price: BTC price at window START
+    # Slug format: btc-updown-5m-{unix_timestamp_end}
+    # Window start = timestamp_end - 300 seconds
     ref_px = micro.price  # fallback
+    ref_px_source = "fallback"
     try:
-        # Try to extract ref price from market slug (e.g. btc-updown-5m-84000)
         slug_parts = market.slug.split("-")
-        ref_px = float(slug_parts[-1])
-    except Exception:
-        pass
+        window_end_ts = int(slug_parts[-1])
+        window_start_ts = window_end_ts - 300
+
+        candles = await fetch_binance_klines(limit=60)
+        if candles:
+            best_candle = None
+            best_diff = float("inf")
+            for candle in candles:
+                candle_open_ts = int(candle[0]) // 1000  # ms -> seconds
+                diff = abs(candle_open_ts - window_start_ts)
+                if diff < best_diff:
+                    best_diff = diff
+                    best_candle = candle
+            if best_candle and best_diff <= 120:
+                ref_px = float(best_candle[1])  # open price of closest candle
+                ref_px_source = f"candle@{best_diff}s"
+                logger.debug(f"Fair model ref_px={ref_px:.0f} from candle (diff={best_diff}s)")
+            else:
+                logger.debug(f"No close candle found for window_start={window_start_ts}, best_diff={best_diff}s")
+    except Exception as e:
+        logger.debug(f"Could not get ref_px from candles: {e}")
 
     fair = compute_fair_updown(
         s_now=micro.price,
         ref_px=ref_px,
         sigma_15m=sigma_estimate,
         tau_sec=max(1.0, time_remaining),
-        window_sec=300.0,  # 5-min windows
+        window_sec=300.0,
     )
     fair_prob = fair["fair_up"]
 
@@ -161,14 +181,13 @@ async def generate_btc_signal(market: BtcMarket) -> Optional[TradingSignal]:
     model_up_prob = 0.60 * fair_prob + 0.40 * technical_prob
     model_up_prob = max(0.30, min(0.70, model_up_prob))
 
-    # Calculate edge and direction
     # --- Mean reversion signal ---
     if market_up_prob > 0.60:
-        mean_reversion_prob = 0.35  # market overpriced UP, fade it
+        mean_reversion_prob = 0.35
     elif market_up_prob < 0.40:
-        mean_reversion_prob = 0.65  # market underpriced UP, buy it
+        mean_reversion_prob = 0.65
     else:
-        mean_reversion_prob = model_up_prob  # neutral, use model
+        mean_reversion_prob = model_up_prob
 
     # Blend mean reversion with existing model (50/50)
     model_up_prob = 0.50 * mean_reversion_prob + 0.50 * model_up_prob
@@ -215,7 +234,7 @@ async def generate_btc_signal(market: BtcMarket) -> Optional[TradingSignal]:
         f"[{filter_status}]{filter_note} "
         f"BTC ${micro.price:,.0f} | RSI:{micro.rsi:.0f} Mom1m:{micro.momentum_1m:+.3f}% "
         f"VWAP:{micro.vwap_deviation:+.3f}% | "
-        f"Technical:{technical_prob:.0%} FairModel:{fair_prob:.0%} (z={fair['z_score']}) "
+        f"Technical:{technical_prob:.0%} FairModel:{fair_prob:.0%} (z={fair['z_score']} ref={ref_px:.0f} src={ref_px_source}) "
         f"Blended:{model_up_prob:.0%} vs Mkt:{market_up_prob:.0%} | "
         f"Edge:{edge:+.1%} -> {direction.upper()} @ {entry_price:.0%} | "
         f"Convergence:{max(up_votes, down_votes)}/4 | "
