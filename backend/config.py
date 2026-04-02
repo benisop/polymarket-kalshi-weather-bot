@@ -22,15 +22,15 @@ class Settings(BaseSettings):
 
     SIMULATION_MODE: bool = True
     INITIAL_BANKROLL: float = 10000.0
-    KELLY_FRACTION: float = 0.15
+    KELLY_FRACTION: float = 0.10
 
     SCAN_INTERVAL_SECONDS: int = 60
     SETTLEMENT_INTERVAL_SECONDS: int = 120
     BTC_PRICE_SOURCE: str = "coinbase"
 
     # Edge mínimo bajado a 5%
-    MIN_EDGE_THRESHOLD: float = 0.03
-    MAX_ENTRY_PRICE: float = 0.55
+    MIN_EDGE_THRESHOLD: float = 0.012
+    MAX_ENTRY_PRICE: float = 0.52
     MAX_TRADES_PER_WINDOW: int = 1
     MAX_TOTAL_PENDING_TRADES: int = 20
 
