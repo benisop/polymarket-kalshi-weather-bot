@@ -148,67 +148,54 @@ def _extract_date(text: str) -> Optional[date]:
 
 async def fetch_polymarket_weather_markets(city_keys: Optional[List[str]] = None) -> List[WeatherMarket]:
     """
-    Search Polymarket for weather temperature markets.
-    Searches for temperature/weather events and parses their titles.
+    Search Polymarket for weather temperature markets using multiple strategies.
     """
     markets = []
+    seen_ids = set()
 
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
-            # Search for weather/temperature events
-            for search_term in ["temperature", "weather high", "weather low"]:
+            queries = [
+                {"tag_id": "100027", "closed": "false", "limit": "100"},
+                {"tag": "weather", "closed": "false", "limit": "100"},
+                {"tag": "Weather", "closed": "false", "limit": "100"},
+                {"slug_contains": "high-temperature", "closed": "false", "limit": "100"},
+                {"slug_contains": "will-the-high", "closed": "false", "limit": "100"},
+                {"slug_contains": "daily-high", "closed": "false", "limit": "100"},
+            ]
+
+            for params in queries:
                 try:
                     response = await client.get(
                         "https://gamma-api.polymarket.com/events",
-                        params={
-                            "closed": "false",
-                            "limit": 100,
-                            "tag": "Weather",
-                        }
+                        params=params,
                     )
                     response.raise_for_status()
                     events = response.json()
 
+                    if not isinstance(events, list):
+                        continue
+
                     for event in events:
                         event_slug = event.get("slug", "")
                         for market_data in event.get("markets", []):
+                            mid = str(market_data.get("id", ""))
+                            if mid in seen_ids:
+                                continue
                             market = _parse_polymarket_weather(market_data, event_slug, city_keys)
                             if market:
                                 markets.append(market)
+                                seen_ids.add(mid)
 
                 except Exception as e:
-                    logger.debug(f"Weather market search for '{search_term}' failed: {e}")
-
-            # Also try slug-based search for known patterns
-            for slug_pattern in ["weather", "temperature", "temp-"]:
-                try:
-                    response = await client.get(
-                        "https://gamma-api.polymarket.com/events",
-                        params={
-                            "closed": "false",
-                            "limit": 100,
-                            "slug_contains": slug_pattern,
-                        }
-                    )
-                    response.raise_for_status()
-                    events = response.json()
-
-                    for event in events:
-                        event_slug = event.get("slug", "")
-                        for market_data in event.get("markets", []):
-                            market = _parse_polymarket_weather(market_data, event_slug, city_keys)
-                            if market and not any(m.market_id == market.market_id for m in markets):
-                                markets.append(market)
-
-                except Exception as e:
-                    logger.debug(f"Weather slug search for '{slug_pattern}' failed: {e}")
+                    logger.debug(f"Weather query {params} failed: {e}")
 
     except Exception as e:
         logger.warning(f"Failed to fetch weather markets: {e}")
 
-    logger.info(f"Found {len(markets)} weather temperature markets")
+    logger.info(f"Polymarket: {len(markets)} weather markets")
+    logger.info(f"Found {len(markets)} total weather temperature markets")
     return markets
-
 
 def _parse_polymarket_weather(
     market_data: dict,
